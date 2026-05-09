@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Explosion Lab - Programmatic Arcade FX</title>
+<style>
+  :root {
+    --bg: #050712;
+    --panel: rgba(10, 14, 28, 0.78);
+    --line: rgba(255,255,255,0.14);
+    --text: #f4f7ff;
+    --muted: #9aa6c4;
+    --hot: #ffcf5a;
+    --danger: #ff5b45;
+    --blue: #7dd3ff;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at 50% 45%, #101936 0%, #070a18 42%, #02030a 100%);
+    color: var(--text);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    touch-action: none;
+  }
+
+  canvas {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    display: block;
+  }
+
+  .hud {
+    position: fixed;
+    left: max(14px, env(safe-area-inset-left));
+    right: max(14px, env(safe-area-inset-right));
+    bottom: max(14px, env(safe-area-inset-bottom));
+    display: grid;
+    gap: 10px;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  .panel {
+    pointer-events: auto;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    box-shadow: 0 20px 80px rgba(0,0,0,0.45);
+    backdrop-filter: blur(14px);
+    border-radius: 18px;
+    padding: 12px;
+  }
+
+  .topline {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  h1 {
+    font-size: clamp(17px, 2.7vw, 24px);
+    margin: 0;
+    letter-spacing: 0.04em;
+  }
+
+  .hint {
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .buttons {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  button {
+    appearance: none;
+    border: 1px solid rgba(255,255,255,0.16);
+    color: var(--text);
+    background: linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04));
+    border-radius: 12px;
+    padding: 10px 8px;
+    font-weight: 700;
+    font-size: 12px;
+    cursor: pointer;
+    transition: transform .08s ease, border .12s ease, background .12s ease;
+  }
+
+  button:hover {
+    border-color: rgba(255, 207, 90, 0.75);
+    background: linear-gradient(180deg, rgba(255,207,90,0.20), rgba(255,91,69,0.08));
+  }
+
+  button:active { transform: translateY(1px) scale(0.99); }
+
+  .readout {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 10px;
+  }
+
+  .readout b { color: var(--hot); }
+
+  @media (max-width: 760px) {
+    .buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .hint { white-space: normal; }
+  }
+</style>
+</head>
+<body>
+<canvas id="fx"></canvas>
+
+<div class="hud">
+  <div class="panel">
+    <div class="topline">
+      <h1>Explosion Lab</h1>
+      <div class="hint">Tap/click anywhere to spawn current FX</div>
+    </div>
+    <div class="buttons">
+      <button data-type="projectile">Projectile Hit</button>
+      <button data-type="ship">Ship Burst</button>
+      <button data-type="boss">Boss Death</button>
+      <button data-type="plasma">Plasma Pop</button>
+      <button data-type="shrapnel">Shrapnel Blast</button>
+      <button data-type="chain">Chain Reaction</button>
+    </div>
+    <div class="readout">
+      <span>Current: <b id="currentName">Projectile Hit</b></span>
+      <span>Particles: <b id="particleCount">0</b></span>
+      <span>API: <b>ExplosionLab.spawn(type, x, y)</b></span>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const canvas = document.getElementById("fx");
+  const ctx = canvas.getContext("2d");
+  const currentName = document.getElementById("currentName");
+  const particleCount = document.getElementById("particleCount");
+
+  const DPR_LIMIT = 2;
+  let dpr = Math.min(devicePixelRatio || 1, DPR_LIMIT);
+  let W = 0;
+  let H = 0;
+  let currentType = "projectile";
+  let time = 0;
+  let shake = 0;
+  let shakeX = 0;
+  let shakeY = 0;
+
+  const particles = [];
+  const rings = [];
+  const flashes = [];
+  const sparks = [];
+  const scorchMarks = [];
+  const stars = [];
+
+  const TAU = Math.PI * 2;
+
+  const FX_NAMES = {
+    projectile: "Projectile Hit",
+    ship: "Ship Burst",
+    boss: "Boss Death",
+    plasma: "Plasma Pop",
+    shrapnel: "Shrapnel Blast",
+    chain: "Chain Reaction"
+  };
+
+  function rand(min, max) { return min + Math.random() * (max - min); }
+  function irand(min, max) { return Math.floor(rand(min, max + 1)); }
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
+
+  function resize() {
+    dpr = Math.min(devicePixelRatio || 1, DPR_LIMIT);
+    W = Math.floor(innerWidth);
+    H = Math.floor(innerHeight);
+    canvas.width = Math.floor(W * dpr);
+    canvas.height = Math.floor(H * dpr);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    makeStars();
+  }
+
+  function makeStars() {
+    stars.length = 0;
+    const count = Math.round((W * H) / 9000);
+    for (let i = 0; i < count; i++) {
+      stars.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        r: rand(0.45, 1.8),
+        a: rand(0.16, 0.85),
+        tw: rand(0.4, 2.4),
+        drift: rand(2, 10)
+      });
+    }
+  }
+
+  function addShake(amount) {
+    shake = Math.max(shake, amount);
+  }
+
+  function radialColor(kind, lifeRatio) {
+    if (kind === "smoke") return `rgba(${irand(55,95)},${irand(52,62)},${irand(58,72)},${lifeRatio * 0.42})`;
+    if (kind === "blue") return `rgba(${irand(80,150)},${irand(185,240)},255,${lifeRatio})`;
+    if (kind === "green") return `rgba(${irand(110,170)},255,${irand(125,190)},${lifeRatio})`;
+    if (kind === "white") return `rgba(255,255,245,${lifeRatio})`;
+    const r = irand(220, 255);
+    const g = irand(60, 220);
+    const b = irand(10, 55);
+    return `rgba(${r},${g},${b},${lifeRatio})`;
+  }
+
+  class Particle {
+    constructor(o) {
+      this.x = o.x; this.y = o.y;
+      this.vx = o.vx || 0; this.vy = o.vy || 0;
+      this.ax = o.ax || 0; this.ay = o.ay ?? 0.02;
+      this.size = o.size || 4;
+      this.grow = o.grow || 0;
+      this.life = o.life || 60;
+      this.maxLife = this.life;
+      this.drag = o.drag ?? 0.985;
+      this.kind = o.kind || "fire";
+      this.rot = rand(0, TAU);
+      this.spin = rand(-0.18, 0.18);
+      this.shape = o.shape || "orb";
+      this.glow = o.glow ?? true;
+    }
+
+    step() {
+      this.life--;
+      this.vx += this.ax;
+      this.vy += this.ay;
+      this.vx *= this.drag;
+      this.vy *= this.drag;
+      this.x += this.vx;
+      this.y += this.vy;
+      this.size += this.grow;
+      this.rot += this.spin;
+      return this.life > 0;
+    }
+
+    draw(ctx) {
+      const t = this.life / this.maxLife;
+      const alpha = clamp(t, 0, 1);
+      const size = Math.max(0.5, this.size);
+
+      if (this.kind === "smoke") {
+        ctx.save();
+        ctx.globalCompositeOperation = "source-over";
+        const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, size * 1.8);
+        grad.addColorStop(0, radialColor("smoke", alpha));
+        grad.addColorStop(0.55, `rgba(45,43,52,${alpha * 0.22})`);
+        grad.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, size * 1.8, 0, TAU);
+        ctx.fill();
+        ctx.restore();
+        return;
+      }
+
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.rot);
+      ctx.globalCompositeOperation = this.glow ? "lighter" : "source-over";
+
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, size * 1.5);
+      grad.addColorStop(0, radialColor("white", alpha));
+      grad.addColorStop(0.28, radialColor(this.kind, alpha * 0.95));
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = grad;
+
+      if (this.shape === "shard") {
+        ctx.beginPath();
+        ctx.moveTo(size * 1.8, 0);
+        ctx.lineTo(-size * 0.7, -size * 0.45);
+        ctx.lineTo(-size * 1.1, 0);
+        ctx.lineTo(-size * 0.7, size * 0.45);
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.arc(0, 0, size * 1.25, 0, TAU);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+
+  class Ring {
+    constructor(o) {
+      this.x = o.x; this.y = o.y;
+      this.r = o.r || 5;
+      this.maxR = o.maxR || 120;
+      this.life = o.life || 42;
+      this.maxLife = this.life;
+      this.width = o.width || 4;
+      this.color = o.color || "255,210,90";
+      this.mode = o.mode || "lighter";
+    }
+    step() {
+      this.life--;
+      const t = 1 - this.life / this.maxLife;
+      this.r = this.maxR * easeOut(t);
+      return this.life > 0;
+    }
+    draw(ctx) {
+      const t = this.life / this.maxLife;
+      ctx.save();
+      ctx.globalCompositeOperation = this.mode;
+      ctx.strokeStyle = `rgba(${this.color},${t * 0.82})`;
+      ctx.lineWidth = this.width * t;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.r, 0, TAU);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  class Flash {
+    constructor(o) {
+      this.x = o.x; this.y = o.y;
+      this.r = o.r || 80;
+      this.life = o.life || 12;
+      this.maxLife = this.life;
+      this.color = o.color || "255,238,180";
+    }
+    step() { this.life--; return this.life > 0; }
+    draw(ctx) {
+      const t = this.life / this.maxLife;
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.r * (2 - t));
+      grad.addColorStop(0, `rgba(255,255,255,${0.88 * t})`);
+      grad.addColorStop(0.16, `rgba(${this.color},${0.58 * t})`);
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.r * (2 - t), 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  class Spark {
+    constructor(o) {
+      this.x = o.x; this.y = o.y;
+      this.vx = o.vx; this.vy = o.vy;
+      this.life = o.life || 28;
+      this.maxLife = this.life;
+      this.color = o.color || "255,220,80";
+      this.width = o.width || 2;
+    }
+    step() {
+      this.life--;
+      this.x += this.vx;
+      this.y += this.vy;
+      this.vx *= 0.965;
+      this.vy = this.vy * 0.965 + 0.035;
+      return this.life > 0;
+    }
+    draw(ctx) {
+      const t = this.life / this.maxLife;
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.strokeStyle = `rgba(${this.color},${t})`;
+      ctx.lineWidth = this.width * t;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y);
+      ctx.lineTo(this.x - this.vx * 4, this.y - this.vy * 4);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function burstParticles(x, y, config) {
+    const count = config.count || 50;
+    for (let i = 0; i < count; i++) {
+      const a = rand(0, TAU);
+      const speed = rand(config.minSpeed || 1, config.maxSpeed || 7);
+      const spread = config.directional ? rand(-0.7, 0.7) : 0;
+      const angle = config.directional ?? a;
+      particles.push(new Particle({
+        x, y,
+        vx: Math.cos(angle + spread) * speed,
+        vy: Math.sin(angle + spread) * speed,
+        size: rand(config.minSize || 2, config.maxSize || 10),
+        grow: rand(config.growMin ?? -0.06, config.growMax ?? 0.08),
+        life: irand(config.minLife || 18, config.maxLife || 70),
+        ay: config.gravity ?? 0.025,
+        drag: config.drag ?? 0.985,
+        kind: config.kind || "fire",
+        shape: config.shape || "orb",
+        glow: config.glow ?? true
+      }));
+    }
+  }
+
+  function burstSparks(x, y, count, speedMin, speedMax, color = "255,220,80") {
+    for (let i = 0; i < count; i++) {
+      const a = rand(0, TAU);
+      const s = rand(speedMin, speedMax);
+      sparks.push(new Spark({
+        x, y,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s,
+        life: irand(12, 38),
+        color,
+        width: rand(1, 3.3)
+      }));
+    }
+  }
+
+  function smokeCloud(x, y, count, radius = 12) {
+    for (let i = 0; i < count; i++) {
+      const a = rand(0, TAU);
+      const d = rand(0, radius);
+      particles.push(new Particle({
+        x: x + Math.cos(a) * d,
+        y: y + Math.sin(a) * d,
+        vx: Math.cos(a) * rand(0.2, 2.2),
+        vy: Math.sin(a) * rand(0.2, 2.2) - rand(0, 0.55),
+        size: rand(8, 28),
+        grow: rand(0.05, 0.22),
+        life: irand(55, 120),
+        ay: -0.004,
+        drag: 0.992,
+        kind: "smoke",
+        glow: false
+      }));
+    }
+  }
+
+  function scorch(x, y, radius) {
+    scorchMarks.push({ x, y, r: radius, life: 900, maxLife: 900 });
+    if (scorchMarks.length > 18) scorchMarks.shift();
+  }
+
+  function projectileHit(x, y) {
+    flashes.push(new Flash({ x, y, r: 42, life: 9 }));
+    rings.push(new Ring({ x, y, maxR: 72, life: 22, width: 5, color: "255,190,70" }));
+    burstParticles(x, y, { count: 38, minSpeed: 1.2, maxSpeed: 5.5, minSize: 2, maxSize: 8, minLife: 14, maxLife: 42 });
+    burstSparks(x, y, 34, 3.5, 11);
+    smokeCloud(x, y, 12, 8);
+    scorch(x, y, 24);
+    addShake(7);
+  }
+
+  function shipBurst(x, y) {
+    flashes.push(new Flash({ x, y, r: 95, life: 18 }));
+    rings.push(new Ring({ x, y, maxR: 125, life: 32, width: 8, color: "255,230,145" }));
+    rings.push(new Ring({ x, y, maxR: 185, life: 46, width: 3, color: "255,100,40" }));
+    burstParticles(x, y, { count: 95, minSpeed: 1.5, maxSpeed: 9.5, minSize: 3, maxSize: 16, minLife: 24, maxLife: 72 });
+    burstParticles(x, y, { count: 26, minSpeed: 2.5, maxSpeed: 8.5, minSize: 3, maxSize: 10, minLife: 34, maxLife: 90, shape: "shard", glow: false });
+    burstSparks(x, y, 70, 4, 14);
+    smokeCloud(x, y, 36, 22);
+    scorch(x, y, 46);
+    addShake(14);
+  }
+
+  function bossDeath(x, y) {
+    flashes.push(new Flash({ x, y, r: 135, life: 22, color: "255,212,130" }));
+    rings.push(new Ring({ x, y, maxR: 170, life: 38, width: 11, color: "255,238,170" }));
+    rings.push(new Ring({ x, y, maxR: 290, life: 70, width: 4, color: "255,70,30" }));
+    burstParticles(x, y, { count: 145, minSpeed: 1.2, maxSpeed: 12.5, minSize: 4, maxSize: 22, minLife: 30, maxLife: 96 });
+    burstParticles(x, y, { count: 70, minSpeed: 2.5, maxSpeed: 13, minSize: 3, maxSize: 12, minLife: 42, maxLife: 130, shape: "shard", glow: false, gravity: 0.06 });
+    burstSparks(x, y, 120, 5, 18);
+
+    for (let i = 0; i < 7; i++) {
+      setTimeout(() => {
+        const ox = rand(-105, 105);
+        const oy = rand(-75, 75);
+        projectileHit(x + ox, y + oy);
+      }, i * 115);
+    }
+
+    smokeCloud(x, y, 70, 42);
+    scorch(x, y, 78);
+    addShake(24);
+  }
+
+  function plasmaPop(x, y) {
+    flashes.push(new Flash({ x, y, r: 76, life: 13, color: "115,220,255" }));
+    rings.push(new Ring({ x, y, maxR: 110, life: 28, width: 6, color: "110,220,255" }));
+    rings.push(new Ring({ x, y, maxR: 165, life: 42, width: 2, color: "130,110,255" }));
+    burstParticles(x, y, { count: 68, minSpeed: 1, maxSpeed: 8, minSize: 2, maxSize: 11, minLife: 20, maxLife: 68, kind: "blue", gravity: -0.002, drag: 0.975 });
+    burstSparks(x, y, 55, 3.5, 12, "120,220,255");
+    addShake(8);
+  }
+
+  function shrapnelBlast(x, y) {
+    flashes.push(new Flash({ x, y, r: 58, life: 11 }));
+    rings.push(new Ring({ x, y, maxR: 95, life: 25, width: 4, color: "255,170,80" }));
+    burstParticles(x, y, { count: 32, minSpeed: 1, maxSpeed: 5, minSize: 3, maxSize: 10, minLife: 20, maxLife: 50 });
+    burstParticles(x, y, { count: 78, minSpeed: 4, maxSpeed: 17, minSize: 2, maxSize: 8, minLife: 26, maxLife: 95, shape: "shard", glow: false, gravity: 0.075, drag: 0.992 });
+    burstSparks(x, y, 62, 5, 15);
+    smokeCloud(x, y, 20, 12);
+    scorch(x, y, 38);
+    addShake(11);
+  }
+
+  function chainReaction(x, y) {
+    shipBurst(x, y);
+    const points = [];
+    for (let i = 0; i < 9; i++) {
+      points.push({
+        x: x + rand(-160, 160),
+        y: y + rand(-105, 105),
+        type: Math.random() > 0.42 ? "projectile" : "plasma"
+      });
+    }
+
+    points.forEach((p, i) => {
+      setTimeout(() => {
+        spawn(p.type, p.x, p.y);
+      }, 120 + i * irand(70, 130));
+    });
+  }
+
+  const spawnMap = {
+    projectile: projectileHit,
+    ship: shipBurst,
+    boss: bossDeath,
+    plasma: plasmaPop,
+    shrapnel: shrapnelBlast,
+    chain: chainReaction
+  };
+
+  function spawn(type, x = W / 2, y = H / 2) {
+    const fn = spawnMap[type] || projectileHit;
+    fn(clamp(x, 20, W - 20), clamp(y, 20, H - 20));
+  }
+
+  function drawBackground() {
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    const g = ctx.createRadialGradient(W * 0.5, H * 0.45, 0, W * 0.5, H * 0.45, Math.max(W, H) * 0.8);
+    g.addColorStop(0, "#101936");
+    g.addColorStop(0.55, "#050817");
+    g.addColorStop(1, "#02030a");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.globalCompositeOperation = "lighter";
+    for (const s of stars) {
+      const twinkle = 0.65 + Math.sin(time * s.tw + s.x) * 0.35;
+      ctx.fillStyle = `rgba(190,220,255,${s.a * twinkle})`;
+      ctx.beginPath();
+      ctx.arc((s.x + time * s.drift * 0.08) % W, s.y, s.r, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawScorch() {
+    for (let i = scorchMarks.length - 1; i >= 0; i--) {
+      const m = scorchMarks[i];
+      m.life--;
+      if (m.life <= 0) {
+        scorchMarks.splice(i, 1);
+        continue;
+      }
+      const t = m.life / m.maxLife;
+      ctx.save();
+      ctx.globalCompositeOperation = "multiply";
+      const grad = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, m.r);
+      grad.addColorStop(0, `rgba(0,0,0,${0.42 * t})`);
+      grad.addColorStop(0.55, `rgba(80,35,22,${0.22 * t})`);
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, m.r, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function drawMockTargets() {
+    // Lightweight placeholder silhouettes for testing impact readability.
+    ctx.save();
+    ctx.globalAlpha = 0.24;
+    ctx.strokeStyle = "rgba(160,190,255,0.5)";
+    ctx.fillStyle = "rgba(80,120,190,0.08)";
+    ctx.lineWidth = 2;
+
+    const cx = W * 0.5;
+    const cy = H * 0.42;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 34);
+    ctx.lineTo(cx + 48, cy + 32);
+    ctx.lineTo(cx + 18, cy + 24);
+    ctx.lineTo(cx, cy + 48);
+    ctx.lineTo(cx - 18, cy + 24);
+    ctx.lineTo(cx - 48, cy + 32);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(W * 0.72, H * 0.34, 42, 0, TAU);
+    ctx.rect(W * 0.72 - 28, H * 0.34 - 12, 56, 24);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function stepArray(arr) {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (!arr[i].step()) arr.splice(i, 1);
+    }
+  }
+
+  function drawArray(arr) {
+    for (const item of arr) item.draw(ctx);
+  }
+
+  function animate() {
+    time += 1 / 60;
+
+    drawBackground();
+
+    shake *= 0.88;
+    shakeX = rand(-shake, shake);
+    shakeY = rand(-shake, shake);
+
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
+
+    drawMockTargets();
+    drawScorch();
+
+    stepArray(flashes);
+    stepArray(rings);
+    stepArray(particles);
+    stepArray(sparks);
+
+    // Render order: flashes, fire, sparks, shockwaves, smoke on top for thick arcade feel.
+    drawArray(flashes);
+
+    for (const p of particles) {
+      if (p.kind !== "smoke") p.draw(ctx);
+    }
+
+    drawArray(sparks);
+    drawArray(rings);
+
+    for (const p of particles) {
+      if (p.kind === "smoke") p.draw(ctx);
+    }
+
+    ctx.restore();
+
+    particleCount.textContent = String(particles.length + rings.length + sparks.length + flashes.length);
+    requestAnimationFrame(animate);
+  }
+
+  function canvasPoint(e) {
+    const t = e.touches && e.touches[0] ? e.touches[0] : e;
+    return { x: t.clientX, y: t.clientY };
+  }
+
+  document.querySelectorAll("button[data-type]").forEach(btn => {
+    btn.addEventListener("click", e => {
+      currentType = btn.dataset.type;
+      currentName.textContent = FX_NAMES[currentType] || currentType;
+      spawn(currentType, W * 0.5, H * 0.42);
+      e.stopPropagation();
+    });
+  });
+
+  canvas.addEventListener("pointerdown", e => {
+    const p = canvasPoint(e);
+    spawn(currentType, p.x, p.y);
+  });
+
+  addEventListener("keydown", e => {
+    const keys = ["projectile", "ship", "boss", "plasma", "shrapnel", "chain"];
+    const n = Number(e.key);
+    if (n >= 1 && n <= 6) {
+      currentType = keys[n - 1];
+      currentName.textContent = FX_NAMES[currentType];
+      spawn(currentType, W * 0.5, H * 0.42);
+    }
+  });
+
+  addEventListener("resize", resize);
+
+  // Public reusable API for your larger game:
+  // ExplosionLab.spawn("projectile", x, y)
+  // ExplosionLab.spawn("ship", x, y)
+  // ExplosionLab.spawn("boss", x, y)
+  // ExplosionLab.spawn("plasma", x, y)
+  // ExplosionLab.spawn("shrapnel", x, y)
+  // ExplosionLab.spawn("chain", x, y)
+  window.ExplosionLab = {
+    spawn,
+    setCurrent(type) {
+      if (spawnMap[type]) {
+        currentType = type;
+        currentName.textContent = FX_NAMES[type] || type;
+      }
+    },
+    clear() {
+      particles.length = rings.length = sparks.length = flashes.length = 0;
+    },
+    get counts() {
+      return {
+        particles: particles.length,
+        rings: rings.length,
+        sparks: sparks.length,
+        flashes: flashes.length
+      };
+    }
+  };
+
+  resize();
+  animate();
+
+  setTimeout(() => spawn("projectile", W * 0.5, H * 0.42), 250);
+})();
+</script>
+</body>
+</html>
